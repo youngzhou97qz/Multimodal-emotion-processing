@@ -1,3 +1,4 @@
+import os
 import math
 import random
 import numpy as np
@@ -18,6 +19,7 @@ torch.backends.cudnn.benchmark = True
 
 # parameters
 user = 'dango'
+save_dir = '/home/'+user+'/multimodal/CMU-MOSEI/weight/'
 L_DIM = 300
 V_DIM = 35
 A_DIM = 74
@@ -27,13 +29,13 @@ V_LEN = 200
 A_LEN = 600
 N_HEADS = 6
 FFN = 2
-N_LAYERS = 1
+N_LAYERS = 2
 EPS = 1e-6
 ACTIV = 'gelu'  # gelu & relu
 UNIFY = 'Conv1D'  # Conv1D & FC
 POS = 'True'  # True & False
 POOL = 'avg_1'  # avg_1 & avg_2 & max_1 & max_2 & avg_1+max_1 & avg_2+max_2 & avg_1_cat_max_1 & avg_2_cat_max_2
-BATCH = 1
+BATCH = 64
 LR = 0.001
 CLIP = 1.0
 EPOCHS = 9999
@@ -54,23 +56,19 @@ for name in data_set.computational_sequences['label'].data.keys():
         test_name.append(name)
 
 def data_loader(data_set, name_list, batch_size, l_len, v_len, a_len):
-#     random.shuffle(name_list)
+    random.shuffle(name_list)
     count = 0
     while count < len(name_list):
         batch = []
         if batch_size < len(name_list) - count:
             size = batch_size
         else: 
-            size = len(imag) - count
+            size = len(name_list) - count
         for _ in range(size):
             l = data_set.computational_sequences['linguistic'].data[name_list[count]]["features"][:]
             v = data_set.computational_sequences['visual'].data[name_list[count]]["features"][:]
             a = data_set.computational_sequences['acoustic'].data[name_list[count]]["features"][:]
-#             随机数据不出NaN
-#             l = np.random.random_sample((20, 300)) * 2 - 1
-#             v = np.random.random_sample((200, 35)) * 2 - 1
-#             a = np.random.random_sample((600, 74)) * 2 - 1
-            label = data_set.computational_sequences['label'].data[name_list[count]]["features"][0]
+            label = data_set.computational_sequences['label'].data[name_list[count]]["features"][0][1:]
             if len(l) >= l_len:
                 l_mask = np.ones(l_len)
             else:
@@ -86,6 +84,10 @@ def data_loader(data_set, name_list, batch_size, l_len, v_len, a_len):
             else:
                 a_mask = np.concatenate((np.zeros(a_len - len(a)), np.ones(len(a))))
             a = np.concatenate([np.zeros([a_len]+list(a.shape[1:])),a],axis=0)[-a_len:,...]
+            for i in range(len(a)):
+                for j in range(len(a[i])):
+                    if math.isinf(a[i][j]):
+                        a[i][j] = -70.
             batch.append((l, v, a, l_mask, v_mask, a_mask, label))
             count += 1
         yield batch
@@ -225,7 +227,7 @@ class Model_1(nn.Module):
         elif pooling == 'avg_2_cat_max_2':
             self.fully_connected = nn.Linear((l_len+v_len+a_len)*2, dim)
         self.normalization = nn.LayerNorm(dim, eps=eps)
-        self.classifier = nn.Linear(dim, 7)
+        self.classifier = nn.Linear(dim, 6)
     def forward(self, l, v, a, l_mask, v_mask, a_mask):
         l, v, a = self.unify_dimension(l, v, a)
         if self.position:
@@ -267,6 +269,7 @@ def train(model, iterator, optimizer):
         linguistic, visual, acoustic, l_mask, v_mask, a_mask, label = zip(*batch)
         linguistic, visual, acoustic, l_mask, v_mask, a_mask, label = torch.cuda.FloatTensor(linguistic), torch.cuda.FloatTensor(visual), torch.cuda.FloatTensor(acoustic), torch.cuda.FloatTensor(l_mask), torch.cuda.FloatTensor(v_mask), torch.cuda.FloatTensor(a_mask), torch.cuda.FloatTensor(label)
         logits_clsf = model(linguistic, visual, acoustic, l_mask, v_mask, a_mask)
+#         loss = nn.BCELoss()(nn.Sigmoid()(logits_clsf), label)
         loss = nn.L1Loss()(logits_clsf, label)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), CLIP)  #梯度裁剪
@@ -292,6 +295,7 @@ def valid(model, iterator):
     return epoch_loss / count
 
 def run(model, data_set, train_list, valid_list, batch_size, learning_rate, epochs):
+    log_name = 'gelu_conv_avg_pos_norm_bce_loss_'
     writer = SummaryWriter('/home/'+user+'/multimodal/CMU-MOSEI/log/')
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(optimizer, factor=0.1, patience=2, verbose=True)
@@ -302,19 +306,23 @@ def run(model, data_set, train_list, valid_list, batch_size, learning_rate, epoc
         valid_iterator = data_loader(data_set, valid_list, batch_size, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN)
         train_loss = train(model, train_iterator, optimizer)
         valid_loss = valid(model, valid_iterator)
-        writer.add_scalar('gelu_conv_avg_pos_norm_train_loss', train_loss, epoch)
-        writer.add_scalar('gelu_conv_avg_pos_norm_valid_loss', valid_loss, epoch)
+        writer.add_scalars(log_name, {'train_loss':train_loss, 'valid_loss':valid_loss}, epoch)
         scheduler.step(valid_loss)
         loss_list.append(valid_loss) 
         if valid_loss == min(loss_list):
             stop = 0
-            print('Epoch: ' + str(epoch+1) + str(valid_loss))
+            torch.save(model.state_dict(), os.path.join(save_dir, log_name+str(valid_loss)[:4]+'.pt'))
+            print('Epoch: ' + str(epoch+1) + ', Loss: ' + str(valid_loss)[:4])
         else:
             stop += 1
             if stop >= 5:
                 break
+    writer.close()
     return min(loss_list)
 
 model = Model_1(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, eps=EPS, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN, unify_dimension=UNIFY, position=POS, activation=ACTIV, pooling=POOL).to(device)
 print(get_parameter_number(model))
+print('Training set: ', len(train_name))
+print('Validation set: ', len(valid_name))
 cls_loss = run(model, data_set, train_name, valid_name, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS)
+#  tensorboard --logdir=/home/dango/multimodal/CMU-MOSEI/log --port 8123
