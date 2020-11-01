@@ -453,6 +453,7 @@ def run(model, data_set, weight_dict, name_list, test_list, batch_size, learning
             stop = 0
             torch.save(model.state_dict(), os.path.join(save_dir, name+e+str(valid_loss)[:4]+'.pt'))
             pred_acc, max_acc, pred_f1, max_f1 = test(model, test_iterator, e)
+            writer.add_scalars(name+e, {'pred_acc':pred_acc, 'pred_f1':pred_f1}, epoch)
             with open(log_file, 'a') as log_f:
                 log_f.write('pred_acc: {pred_acc:1.4f}\nmax_acc: {max_acc:1.4f}\npred_f1: {pred_f1:1.4f}\nmax_f1: {max_f1:1.4f}\n'.format(pred_acc=pred_acc, max_acc=max_acc, pred_f1=pred_f1, max_f1=max_f1))
         else:
