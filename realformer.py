@@ -32,7 +32,7 @@ BATCH = 64
 DIM = 96
 N_HEADS = 6
 FFN = 2
-N_LAYERS = 1
+N_LAYERS = 2
 LR = 0.001
 DROP = 0.0
 P_LEN = 6
@@ -166,6 +166,9 @@ class Attention_Block(nn.Module):
             nn.Linear(FFN * dim, dim),
             nn.Dropout(DROP),
         )
+        self.a = nn.Parameter(torch.FloatTensor([0]), requires_grad=True)
+        self.b = nn.Parameter(torch.FloatTensor([0]), requires_grad=True)
+        self.c = nn.Parameter(torch.FloatTensor([0]), requires_grad=True)
     def split_last(self, x, shape):
         shape = list(shape)
         assert shape.count(-1) <= 1
@@ -184,22 +187,25 @@ class Attention_Block(nn.Module):
         '''
         q, k, v = self.w_qkv[0](q), self.w_qkv[1](k), self.w_qkv[2](v)
         q, k, v = (self.split_last(x, (self.n_heads, -1)).transpose(1, 2) for x in [q, k, v])
-        scores = q @ k.transpose(-2, -1) / np.sqrt(k.size(-1))   
+        if scores is not None: 
+            scores = q @ k.transpose(-2, -1) / np.sqrt(k.size(-1)) + self.c * scores
+        else:
+            scores = q @ k.transpose(-2, -1) / np.sqrt(k.size(-1))
         if mask is not None:
             if len(mask.shape) == 2:
                 mask = mask[:, None, None, :]
             elif len(mask.shape) == 3:
                 mask = torch.unsqueeze(mask, 1)
                 mask = mask.repeat(1,self.n_heads,1,1)
-            scores -= 1.0e9 * (1.0 - mask)
+            scores -= 1.0e8 * (1.0 - mask)
         att = F.softmax(scores, dim=-1)
         q = (att @ v).transpose(1, 2).contiguous()
         q = self.merge_last(q, 2)
         return self.drop(self.proj(q)), scores
     def forward(self, q, k, v, mask, scores = None):
         x, scores =  self.multi_head_attention(q, k, v, mask, scores)
-        q = self.norm1(q + x)
-        q = self.norm2(q + self.ffn(q))
+        q = self.norm1(q + self.a * x)
+        q = self.norm2(q + self.b * self.ffn(q))
         return q, scores
 
 class Multi_class(nn.Module):
@@ -224,31 +230,31 @@ class Multi_class(nn.Module):
         aa, al, av = a, a, a
         scores = None
         for i in range(self.n_layers):
-            ll, scores = self.multimodal_blocks[i](ll, l, l, l_mask)
+            ll, scores = self.multimodal_blocks[self.n_layers*0+i](ll, l, l, l_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            lv, scores = self.multimodal_blocks[2+i](lv, v, v, v_mask)
+            lv, scores = self.multimodal_blocks[self.n_layers*1+i](lv, v, v, v_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            la, scores = self.multimodal_blocks[4+i](la, a, a, a_mask)
+            la, scores = self.multimodal_blocks[self.n_layers*2+i](la, a, a, a_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            vv, scores = self.multimodal_blocks[6+i](vv, v, v, v_mask)
+            vv, scores = self.multimodal_blocks[self.n_layers*3+i](vv, v, v, v_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            vl, scores = self.multimodal_blocks[8+i](vl, l, l, l_mask)
+            vl, scores = self.multimodal_blocks[self.n_layers*4+i](vl, l, l, l_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            va, scores = self.multimodal_blocks[10+i](va, a, a, a_mask)
+            va, scores = self.multimodal_blocks[self.n_layers*5+i](va, a, a, a_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            aa, scores = self.multimodal_blocks[12+i](aa, a, a, a_mask)
+            aa, scores = self.multimodal_blocks[self.n_layers*6+i](aa, a, a, a_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            al, scores = self.multimodal_blocks[14+i](al, l, l, l_mask)
+            al, scores = self.multimodal_blocks[self.n_layers*7+i](al, l, l, l_mask, scores)
         scores = None
         for i in range(self.n_layers):
-            av, scores = self.multimodal_blocks[16+i](av, v, v, v_mask)
+            av, scores = self.multimodal_blocks[self.n_layers*8+i](av, v, v, v_mask, scores)
         l = torch.cat([ll, lv, la], dim=2)
         v = torch.cat([vv, vl, va], dim=2)
         a = torch.cat([aa, al, av], dim=2)
@@ -262,8 +268,7 @@ class State_Transfer(nn.Module):
         super().__init__()
         self.feature = Multi_class(l_dim=l_dim, v_dim=v_dim, a_dim=a_dim, dim=dim, l_len=l_len, v_len=v_len, a_len=a_len, n_heads=n_heads, n_layers=n_layers, ffn=ffn)
         self.classifier = nn.Linear(dim, 6*2)
-        self.trans = nn.Linear(6, 6, bias=False)
-#         self.trans = nn.Parameter(torch.rand(6,6), requires_grad=True)
+        self.trans = nn.Parameter(torch.rand(6,6), requires_grad=True)
     def forward(self, l, v, a, l_mask, v_mask, a_mask):  # (batch, y_len, x_len, x_dim)
         out_list, feats_list = [], []
         for i in range(l.shape[1]):
@@ -273,32 +278,7 @@ class State_Transfer(nn.Module):
             temp_out_t1, temp_feats = temp_feats.chunk(2, 1)  # (batch, 6)
             if i != 0:
                 alpha = torch.sigmoid(temp_feats + feats_list[-1].squeeze())
-                temp_out_t0 = torch.tanh(self.trans(out_list[-1].squeeze()))
-#                 temp_out_t0 = torch.tanh(torch.matmul(out_list[-1].squeeze(), self.trans))
-                temp_out_t1 = (1-alpha) * temp_out_t1 + alpha * temp_out_t0
-            out_list.append(temp_out_t1.unsqueeze(1))
-            feats_list.append(temp_feats.unsqueeze(1))
-        out = torch.cat(out_list, dim=1)
-        return out  # (batch, y_len, 6)
-
-class State_Transfer(nn.Module):
-    def __init__(self, l_dim, v_dim, a_dim, dim, l_len, v_len, a_len, n_heads, n_layers, ffn):
-        super().__init__()
-        self.feature = Multi_class(l_dim=l_dim, v_dim=v_dim, a_dim=a_dim, dim=dim, l_len=l_len, v_len=v_len, a_len=a_len, n_heads=n_heads, n_layers=n_layers, ffn=ffn)
-        self.classifier = nn.Linear(dim, 6*2)
-        self.trans = nn.Linear(6, 6, bias=False)
-#         self.trans = nn.Parameter(torch.rand(6,6), requires_grad=True)
-    def forward(self, l, v, a, l_mask, v_mask, a_mask):  # (batch, y_len, x_len, x_dim)
-        out_list, feats_list = [], []
-        for i in range(l.shape[1]):
-            temp_l, temp_v, temp_a, temp_l_mask, temp_v_mask, temp_a_mask = l[:,i,:,:], v[:,i,:,:], a[:,i,:,:], l_mask[:,i,:], v_mask[:,i,:], a_mask[:,i,:]
-            temp_feats = self.feature(temp_l, temp_v, temp_a, temp_l_mask, temp_v_mask, temp_a_mask)  # (batch, dim)
-            temp_feats = self.classifier(temp_feats)  # (batch, 6*2)
-            temp_out_t1, temp_feats = temp_feats.chunk(2, 1)  # (batch, 6)
-            if i != 0:
-                alpha = torch.sigmoid(temp_feats + feats_list[-1].squeeze())
-                temp_out_t0 = torch.tanh(self.trans(out_list[-1].squeeze()))
-#                 temp_out_t0 = torch.tanh(torch.matmul(out_list[-1].squeeze(), self.trans))
+                temp_out_t0 = torch.tanh(torch.matmul(out_list[-1].squeeze(), self.trans))
                 temp_out_t1 = (1-alpha) * temp_out_t1 + alpha * temp_out_t0
             out_list.append(temp_out_t1.unsqueeze(1))
             feats_list.append(temp_feats.unsqueeze(1))
@@ -383,14 +363,27 @@ def run(model, data_set, train_list, valid_list, batch_size, learning_rate, epoc
                 break
     writer.close()
 
-# model_1 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
-# valid_list = train_name_list[:int(len(train_name_list)*0.2)]
-# train_list = train_name_list[int(len(train_name_list)*0.2):]
-# run(model_1, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_1')
-# model_2 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
-# valid_list = train_name_list[int(len(train_name_list)*0.8):]
-# train_list = train_name_list[:int(len(train_name_list)*0.8)]
-# run(model_2, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_2')
+random.shuffle(train_name_list)
+model_1 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+valid_list = train_name_list[:int(len(train_name_list)*0.2)]
+train_list = train_name_list[int(len(train_name_list)*0.2):]
+run(model_1, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_1')
+model_2 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+valid_list = train_name_list[int(len(train_name_list)*0.2):int(len(train_name_list)*0.4)]
+train_list = train_name_list[:int(len(train_name_list)*0.2)] + train_name_list[int(len(train_name_list)*0.4):]
+run(model_2, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_2')
+model_3 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+valid_list = train_name_list[int(len(train_name_list)*0.4):int(len(train_name_list)*0.6)]
+train_list = train_name_list[:int(len(train_name_list)*0.4)] + train_name_list[int(len(train_name_list)*0.6):]
+run(model_3, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_3')
+model_4 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+valid_list = train_name_list[int(len(train_name_list)*0.6):int(len(train_name_list)*0.8)]
+train_list = train_name_list[:int(len(train_name_list)*0.6)] + train_name_list[int(len(train_name_list)*0.8):]
+run(model_4, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_4')
+model_5 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+valid_list = train_name_list[int(len(train_name_list)*0.8):]
+train_list = train_name_list[:int(len(train_name_list)*0.8)]
+run(model_5, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_5')
 
 # for name, p in model_1.named_parameters():
 #     if name == 'trans.weight':
