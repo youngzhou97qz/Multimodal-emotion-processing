@@ -4,7 +4,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 from mmsdk import mmdatasdk
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, recall_score, precision_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,7 +19,7 @@ torch.backends.cudnn.benchmark = True
 # parameters
 user = 'dango/multimodal/CMU-MOSEI'
 data_dir = '/home/'+user+'/align/'
-log_dir = '/home/'+user+'/par_log/another_1/'
+# log_dir = '/home/'+user+'/par_log/another_1/'
 L_DIM = 300
 V_DIM = 35
 A_DIM = 74
@@ -28,14 +28,14 @@ V_LEN = 50
 A_LEN = 50
 CLIP = 1.0
 EPOCHS = 99
-BATCH = 64
-DIM = 96
-N_HEADS = 6
-FFN = 2
-N_LAYERS = 2
-LR = 0.01
-DROP = 0.0
 P_LEN = 6
+# BATCH = 64
+# DIM = 96
+# N_HEADS = 6
+# FFN = 2
+# N_LAYERS = 1
+# LR = 0.01
+# DROP = 0.0
 
 a = np.array(
     [[0.597, 0.575, 0.463, 0.523, 0.433, 0.401, 0.463],
@@ -345,7 +345,6 @@ class Multi_class(nn.Module):
         a = torch.cat([aa, al, av], dim=2)
         x = torch.cat([l, a, v], dim=1)  # (batch, l_len+v_len+a_len, dim*3)
         x = torch.cat([torch.mean(x, 1), torch.max(x, 1)[0]], dim=1)  # (batch, dim*6)
-        x = self.drop(nn.ELU()(self.normalization(self.fully_connected(x))))  # (batch, dim)
 #         x = self.drop(nn.ReLU()(self.normalization(self.fully_connected(x))))  # (batch, dim)
         return x
 
@@ -353,7 +352,7 @@ class Control_Group(nn.Module):
     def __init__(self, l_dim, v_dim, a_dim, dim, l_len, v_len, a_len, n_heads, n_layers, ffn):
         super().__init__()
         self.feature = Multi_class(l_dim=l_dim, v_dim=v_dim, a_dim=a_dim, dim=dim, l_len=l_len, v_len=v_len, a_len=a_len, n_heads=n_heads, n_layers=n_layers, ffn=ffn)
-        self.emotion = nn.Linear(dim, 7)  # (no need sigmoid)
+        self.emotion = nn.Linear(dim*6, 7)  # (no need sigmoid)
     def forward(self, l, v, a, l_mask, v_mask, a_mask):  # (batch, y_len, x_len, x_dim)
         out_list = []
         for i in range(l.shape[1]):
@@ -367,9 +366,10 @@ class State_Transfer(nn.Module):
     def __init__(self, l_dim, v_dim, a_dim, dim, l_len, v_len, a_len, n_heads, n_layers, ffn):
         super().__init__()
         self.feature = Multi_class(l_dim=l_dim, v_dim=v_dim, a_dim=a_dim, dim=dim, l_len=l_len, v_len=v_len, a_len=a_len, n_heads=n_heads, n_layers=n_layers, ffn=ffn)
-        self.emotion = nn.Linear(dim, 7)  # (no need sigmoid)
+        self.emotion = nn.Linear(dim*6, 7)  # (no need sigmoid)
         self.trans = nn.Parameter(torch.rand(7,7,7), requires_grad=True)
-    def forward(self, l, v, a, l_mask, v_mask, a_mask):  # (batch, y_len, x_len, x_dim)
+        self.out = nn.Linear(7, 7)  # (no need sigmoid)
+    def forward(self, l, v, a, l_mask, v_mask, a_mask, p):  # (batch, y_len, x_len, x_dim)
         out_list, emo_list = [], []
         for i in range(l.shape[1]):
             temp_l, temp_v, temp_a, temp_l_mask, temp_v_mask, temp_a_mask = l[:,i,:,:], v[:,i,:,:], a[:,i,:,:], l_mask[:,i,:], v_mask[:,i,:], a_mask[:,i,:]
@@ -378,9 +378,12 @@ class State_Transfer(nn.Module):
             if i != 0:
                 batch_list = []
                 for j in range(temp_emotion.shape[0]):
-#                     temp_out = torch.matmul(emo_list[-1].squeeze()[j], nn.Softmax(dim=-1)(self.trans))  # (7, 7)
-                    temp_out = torch.matmul(out_list[-1].squeeze()[j], nn.Softmax(dim=-1)(self.trans))  # (7, 7)
+                    if random.random() <= p:
+                        temp_out = torch.matmul(emo_list[-1].squeeze()[j], nn.Tanh()(self.trans))  # (7, 7)
+                    else:
+                        temp_out = torch.matmul(out_list[-1].squeeze()[j], nn.Tanh()(self.trans))  # (7, 7)
                     temp_out = torch.matmul(nn.Softmax(dim=-1)(temp_emotion[j]), temp_out)  # (7,)
+                    temp_out = self.out(temp_out)
                     batch_list.append(temp_out.unsqueeze(0))
                 temp_energy = torch.cat(batch_list, dim=0)  # (batch, 7)
             else:
@@ -401,7 +404,7 @@ def multi_circle_loss(y_pred, y_true):
     pos_loss = torch.logsumexp(y_pred_pos, dim=-1)
     return neg_loss + pos_loss
 
-def train(model, iterator, optimizer):
+def train(model, iterator, optimizer, p):
     model.train()
     epoch_loss, count = 0, 0
     iter_bar = tqdm(iterator, desc='Training')
@@ -411,7 +414,7 @@ def train(model, iterator, optimizer):
         linguistic, visual, acoustic, label, l_mask, v_mask, a_mask, mask = zip(*batch)
         linguistic, visual, acoustic, label, l_mask, v_mask, a_mask, mask = torch.cuda.FloatTensor(linguistic), torch.cuda.FloatTensor(visual), torch.cuda.FloatTensor(acoustic),\
         torch.cuda.LongTensor(label), torch.cuda.FloatTensor(l_mask), torch.cuda.FloatTensor(v_mask), torch.cuda.FloatTensor(a_mask), torch.cuda.LongTensor(mask)
-        logits_clsf = model(linguistic, visual, acoustic, l_mask, v_mask, a_mask)
+        logits_clsf = model(linguistic, visual, acoustic, l_mask, v_mask, a_mask, p)
         loss = multi_circle_loss(logits_clsf, label)
         loss = (loss*mask).mean()
         loss.backward()
@@ -421,7 +424,7 @@ def train(model, iterator, optimizer):
         epoch_loss += loss.item()
     return epoch_loss / count
 
-def valid(model, iterator):
+def valid(model, iterator, p):
     model.eval()
     epoch_loss, count = 0, 0
     with torch.no_grad():
@@ -431,7 +434,7 @@ def valid(model, iterator):
             linguistic, visual, acoustic, label, l_mask, v_mask, a_mask, mask = zip(*batch)
             linguistic, visual, acoustic, label, l_mask, v_mask, a_mask, mask = torch.cuda.FloatTensor(linguistic), torch.cuda.FloatTensor(visual), torch.cuda.FloatTensor(acoustic),\
             torch.cuda.LongTensor(label), torch.cuda.FloatTensor(l_mask), torch.cuda.FloatTensor(v_mask), torch.cuda.FloatTensor(a_mask), torch.cuda.LongTensor(mask)
-            logits_clsf = model(linguistic, visual, acoustic, l_mask, v_mask, a_mask)
+            logits_clsf = model(linguistic, visual, acoustic, l_mask, v_mask, a_mask, p)
             loss = multi_circle_loss(logits_clsf, label)
             loss = (loss*mask).mean()
             iter_bar.set_description('Iter (loss=%3.3f)'%loss.item())
@@ -451,8 +454,9 @@ def run(model, data_set, train_list, valid_list, batch_size, learning_rate, epoc
         print('Epoch: ' + str(epoch+1))
         train_iterator = data_loader(data_set, train_list, batch_size)
         valid_iterator = data_loader(data_set, valid_list, batch_size)
-        train_loss = train(model, train_iterator, optimizer)
-        _, _, valid_loss = valid(model, valid_iterator)
+        p = Miu/(Miu-1+math.exp(epoch/3))
+        train_loss = train(model, train_iterator, optimizer, p)
+        _, _, valid_loss = valid(model, valid_iterator, 0)
         writer.add_scalars(name, {'train_loss':train_loss, 'valid_loss':valid_loss}, epoch)
         scheduler.step(valid_loss)
         loss_list.append(valid_loss) 
@@ -466,6 +470,16 @@ def run(model, data_set, train_list, valid_list, batch_size, learning_rate, epoc
             if stop >= 4:
                 break
     writer.close()
+
+# model_1 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+# valid_list = train_name_list[:int(len(train_name_list)*0.002)]
+# train_list = train_name_list[:int(len(train_name_list)*0.002)]
+# run(model_1, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_1')
+
+# model_1 = Control_Group(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+# valid_list = train_name_list[:int(len(train_name_list)*0.002)]
+# train_list = train_name_list[:int(len(train_name_list)*0.002)]
+# run(model_1, data_set, train_list, valid_list, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_1')
 
 # random.shuffle(train_name_list)
 # model_1 = State_Transfer(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
