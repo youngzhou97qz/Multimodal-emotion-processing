@@ -394,7 +394,7 @@ def run(model, data_set, replace_dict, train_list, valid_list, batch_size, learn
             log_f.write('\n{epoch},{train_loss: 2.2f},{valid_loss: 2.2f}\n'.format(epoch=epoch+1, train_loss=train_loss, valid_loss=valid_loss))
         if valid_loss == min(loss_list):
             stop = 0
-            torch.save(model.state_dict(), os.path.join(save_dir, name+'_'+str(valid_loss)[:4]+'.pt'))
+            torch.save(model.state_dict(), os.path.join(log_dir, name+'_'+str(valid_loss)[:4]+'.pt'))
         else:
             stop += 1
             if stop >= 3:
