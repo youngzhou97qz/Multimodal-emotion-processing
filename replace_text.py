@@ -405,3 +405,81 @@ random.shuffle(train_name)
 model_1 = Multi_class(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
 run(model_1, mosei_set, ren_dict, train_name, test_name, batch_size=BATCH, learning_rate=LR, epochs=EPOCHS, name='model_1')
 print('Finish')
+
+#  test
+def test_loader(data_set, replace_dict, name_list):
+    random.shuffle(name_list)
+    count = 0
+    while count < len(name_list):
+        batch = []
+        l_temp, v_temp, a_temp, lmask_temp, vmask_temp, amask_temp, label_temp = [], [], [], [], [], [], []
+        label = label_processing(data_set.computational_sequences['label'].data[name_list[count]]["features"][0])
+        if ''.join(label) != '0000001' and ''.join(label) in replace_dict.keys() and len(replace_dict[''.join(label)]) != 0:
+            text = replace_dict[''.join(label)][-1]
+            replace_dict[''.join(label)] = replace_dict[''.join(label)][:-1]
+        else:
+            text = replace_dict['0000001'][random.randint(0, len(replace_dict['0000001'])-1)]
+        text = text_model(**text_tokenizer(text[:509], return_tensors="pt"))[0][0][1:-1,:].detach().numpy()
+        l, l_mask = masking(text[-L_LEN:], L_LEN)
+        v, v_mask = masking(data_set.computational_sequences['visual'].data[name_list[count]]["features"][-V_LEN:], V_LEN)
+        a, a_mask = masking(data_set.computational_sequences['acoustic'].data[name_list[count]]["features"][-A_LEN:], A_LEN, is_audio=True)
+        for i in range(len(label)):
+            label[i] = int(label[i])
+        batch.append((l, v, a, l_mask, v_mask, a_mask, label))
+#         print(name_list[count])
+        count += 1
+        yield batch
+
+def f1_calculation(model):
+    model.eval()
+    with torch.no_grad():
+        for i in range(19):
+            t = i/10-1.1
+            test_iterator = test_loader(mosei_set, ren_dict, test_name)
+            label_happ, soft_happ = [], []
+            label_sadn, soft_sadn = [], []
+            label_ange, soft_ange = [], []
+            label_surp, soft_surp = [], []
+            label_disg, soft_disg = [], []
+            label_fear, soft_fear = [], []
+            for _, batch in enumerate(test_iterator):
+                linguistic, visual, acoustic, l_mask, v_mask, a_mask, label = zip(*batch)
+                linguistic, visual, acoustic, l_mask, v_mask, a_mask, label = torch.cuda.FloatTensor(linguistic), torch.cuda.FloatTensor(visual), torch.cuda.FloatTensor(acoustic),\
+                torch.cuda.FloatTensor(l_mask), torch.cuda.FloatTensor(v_mask), torch.cuda.FloatTensor(a_mask), torch.cuda.LongTensor(label)
+                pred = (model(linguistic, visual, acoustic, l_mask, v_mask, a_mask)).detach().cpu()
+                zero = torch.zeros_like(pred)
+                one = torch.ones_like(pred)
+                label = label.detach().cpu()
+                pred = torch.where(pred > t, one, zero)
+#                 print(pred[0][:6])
+                label_happ.append(int(label[0][0]))  # happ sadn ange disg surp fear neut
+                label_sadn.append(int(label[0][1]))
+                label_ange.append(int(label[0][2]))
+                label_surp.append(int(label[0][4]))
+                label_disg.append(int(label[0][3]))
+                label_fear.append(int(label[0][5]))
+                soft_happ.append(int(pred[0][0]))
+                soft_sadn.append(int(pred[0][1]))
+                soft_ange.append(int(pred[0][2]))
+                soft_surp.append(int(pred[0][4]))
+                soft_disg.append(int(pred[0][3]))
+                soft_fear.append(int(pred[0][5]))
+            happ_f1 = f1_score(label_happ, soft_happ, average='weighted')
+            sadn_f1 = f1_score(label_sadn, soft_sadn, average='weighted')
+            ange_f1 = f1_score(label_ange, soft_ange, average='weighted')
+            surp_f1 = f1_score(label_surp, soft_surp, average='weighted')
+            disg_f1 = f1_score(label_disg, soft_disg, average='weighted')
+            fear_f1 = f1_score(label_fear, soft_fear, average='weighted')
+            print('t: ', t)
+            print('happ_f1: ', happ_f1)
+            print('sadn_f1: ', sadn_f1)
+            print('ange_f1: ', ange_f1)
+            print('fear_f1: ', fear_f1)
+            print('disg_f1: ', disg_f1)
+            print('surp_f1: ', surp_f1)
+            print('\n')
+    return 0
+
+model_1 = Multi_class(l_dim=L_DIM, v_dim=V_DIM, a_dim=A_DIM, dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_1.load_state_dict(torch.load(log_dir + 'model_1_2.02.pt'))
+f1_calculation(model_1)
