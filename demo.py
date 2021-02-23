@@ -48,7 +48,7 @@ for i in range(len(name_list)):
     name_list[i] = name_list[i].split('.pk')[0]
 
 # 数据名-标签字典
-def label_dictionary(file_name, name_list):
+def label_dictionary(file_name, name_list):    # happ sadn ange disg surp fear neut
     dictionary = {}
     with open(file_name, 'r') as f:
         lines = f.readlines()[1:]
@@ -522,3 +522,130 @@ def run(model, train_list, valid_list, batch_size, learning_rate, epochs, log_na
             if stop >= 7:
                 break
     writer.close()
+
+def f1_calculation(test_list, model_1, model_2, model_3, model_4):
+    model_1.eval()
+    model_2.eval()
+    model_3.eval()
+    model_4.eval()
+    with torch.no_grad():
+        for i in tqdm(range(13)):
+            t = i/10-1.0
+            test_iterator = data_loader(test_list, batch_size=64)
+            label_happ, soft_happ = [], []
+            label_sadn, soft_sadn = [], []
+            label_ange, soft_ange = [], []
+            label_surp, soft_surp = [], []
+            label_disg, soft_disg = [], []
+            label_fear, soft_fear = [], []
+            for _, batch in enumerate(test_iterator):
+                linguistic, visual_256, visual_512, visual_1024, acoustic, l_mask, v_mask, a_mask, label = zip(*batch)
+                linguistic, visual_256, visual_512, visual_1024, acoustic, l_mask, v_mask, a_mask, label = torch.cuda.FloatTensor(linguistic), torch.cuda.FloatTensor(visual_256),\
+                torch.cuda.FloatTensor(visual_512), torch.cuda.FloatTensor(visual_1024), torch.cuda.FloatTensor(acoustic),torch.cuda.FloatTensor(l_mask),\
+                torch.cuda.FloatTensor(v_mask), torch.cuda.FloatTensor(a_mask), torch.cuda.LongTensor(label)
+                pred_1 = (model_1(linguistic, visual_256, visual_512, visual_1024, acoustic, l_mask, v_mask, a_mask)).detach().cpu()
+                pred_2 = (model_2(linguistic, visual_256, visual_512, visual_1024, acoustic, l_mask, v_mask, a_mask)).detach().cpu()
+                pred_3 = (model_3(linguistic, visual_256, visual_512, visual_1024, acoustic, l_mask, v_mask, a_mask)).detach().cpu()
+                pred_4 = (model_4(linguistic, visual_256, visual_512, visual_1024, acoustic, l_mask, v_mask, a_mask)).detach().cpu()
+                pred = (pred_1+pred_2+pred_3+pred_4) / 4
+                zero = torch.zeros_like(pred)
+                one = torch.ones_like(pred)
+                label = label.detach().cpu()
+                pred_t = torch.where(pred > t, one, zero)
+                for j in range(len(label)):  # happ sadn ange disg surp fear neut
+                    label_happ.append(int(label[j][0]))
+                    label_sadn.append(int(label[j][1]))
+                    label_ange.append(int(label[j][2]))
+                    label_surp.append(int(label[j][4]))
+                    label_disg.append(int(label[j][3]))
+                    label_fear.append(int(label[j][5]))
+                    soft_happ.append(int(pred_t[j][0]))
+                    soft_sadn.append(int(pred_t[j][1]))
+                    soft_ange.append(int(pred_t[j][2]))
+                    soft_surp.append(int(pred_t[j][4]))
+                    soft_disg.append(int(pred_t[j][3]))
+                    soft_fear.append(int(pred_t[j][5]))
+            happ_f1 = f1_score(label_happ, soft_happ, average='weighted')
+            sadn_f1 = f1_score(label_sadn, soft_sadn, average='weighted')
+            ange_f1 = f1_score(label_ange, soft_ange, average='weighted')
+            surp_f1 = f1_score(label_surp, soft_surp, average='weighted')
+            disg_f1 = f1_score(label_disg, soft_disg, average='weighted')
+            fear_f1 = f1_score(label_fear, soft_fear, average='weighted')
+            print('t: ', t)
+            print('happ_f1: ', happ_f1)
+            print('sadn_f1: ', sadn_f1)
+            print('ange_f1: ', ange_f1)
+            print('fear_f1: ', fear_f1)
+            print('disg_f1: ', disg_f1)
+            print('surp_f1: ', surp_f1)
+    return 0
+
+model_1 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_1.load_state_dict(torch.load(log_dir + 'model_1_1.31.pt'))
+model_2 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_2.load_state_dict(torch.load(log_dir + 'model_2_1.37.pt'))
+model_3 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_3.load_state_dict(torch.load(log_dir + 'model_3_1.39.pt'))
+model_4 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_4.load_state_dict(torch.load(log_dir + 'model_4_1.32.pt'))
+f1_calculation(name_list, model_1, model_2, model_3, model_4)
+
+def demo_output(video_file, v_name, audio_file, a_name, ren_feat_file, l_name, model_1, model_2, model_3, model_4):
+    l, l_mask = text_features(ren_feat_file, l_name, L_LEN)
+    l, l_mask = torch.cuda.FloatTensor(np.expand_dims(l, axis=0)), torch.cuda.FloatTensor(np.expand_dims(l_mask, axis=0))
+    v_256, v_512, v_1024, v_mask = video_features(video_file, v_name, V_LEN)
+    v_256, v_512 = torch.cuda.FloatTensor(np.expand_dims(v_256, axis=0)), torch.cuda.FloatTensor(np.expand_dims(v_512, axis=0))
+    v_1024, v_mask = torch.cuda.FloatTensor(np.expand_dims(v_1024, axis=0)), torch.cuda.FloatTensor(np.expand_dims(v_mask, axis=0))
+    a, a_mask = audio_features(audio_file, a_name, A_LEN)
+    a, a_mask = torch.cuda.FloatTensor(np.expand_dims(a, axis=0)), torch.cuda.FloatTensor(np.expand_dims(a_mask, axis=0))
+    model_1.eval()
+    model_2.eval()
+    model_3.eval()
+    model_4.eval()
+    with torch.no_grad():
+        pred_1 = (model_1(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
+        pred_2 = (model_2(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
+        pred_3 = (model_3(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
+        pred_4 = (model_4(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
+        pred = (pred_1+pred_2+pred_3+pred_4) / 4
+        zero = torch.zeros_like(pred)
+        one = torch.ones_like(pred)
+        pred_happ = torch.where(pred > 0.0, one, zero)    # happ sadn ange disg surp fear neut
+        pred_sadn = torch.where(pred > 0.1, one, zero)
+        pred_ange = torch.where(pred > -0.1, one, zero)
+        pred_disg = torch.where(pred > -0.1, one, zero)
+        pred_surp = torch.where(pred > 0.0, one, zero)
+        pred_fear = torch.where(pred > 0.0, one, zero)
+        print('The emotion(s) is(are)')
+        if int(pred_happ[0][0]) == 1:
+            print('happy')
+        if int(pred_sadn[0][1]) == 1:
+            print('sad')
+        if int(pred_ange[0][2]) == 1:
+            print('angry')
+        if int(pred_disg[0][3]) == 1:
+            print('disgust')
+        if int(pred_surp[0][4]) == 1:
+            print('surprise')
+        if int(pred_fear[0][5]) == 1:
+            print('fear')
+        if int(pred_happ[0][0])+int(pred_sadn[0][1])+int(pred_ange[0][2])+int(pred_disg[0][3])+int(pred_surp[0][4])+int(pred_fear[0][5]) == 0:
+            print('neutral')
+
+model_1 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_1.load_state_dict(torch.load(log_dir + 'model_1_1.31.pt'))
+model_2 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_2.load_state_dict(torch.load(log_dir + 'model_2_1.37.pt'))
+model_3 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_3.load_state_dict(torch.load(log_dir + 'model_3_1.39.pt'))
+model_4 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
+model_4.load_state_dict(torch.load(log_dir + 'model_4_1.32.pt'))
+
+v_name = '0jtdrsmVzYQ[0]'
+a_name = '0jtdrsmVzYQ[0]'
+l_name = '99_1_1'
+demo_output(video_file, v_name, audio_file, a_name, ren_feat_file, l_name, model_1, model_2, model_3, model_4)
+
+# The emotion(s) is(are)
+# happy
+# sad
