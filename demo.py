@@ -590,6 +590,10 @@ model_4 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_
 model_4.load_state_dict(torch.load(log_dir + 'model_4_1.32.pt'))
 f1_calculation(name_list, model_1, model_2, model_3, model_4)
 
+# 输出情感
+def sigmoids(x, t):
+    return 1/(1 + math.exp(-x+t))
+
 def demo_output(video_file, v_name, audio_file, a_name, ren_feat_file, l_name, model_1, model_2, model_3, model_4):
     l, l_mask = text_features(ren_feat_file, l_name, L_LEN)
     l, l_mask = torch.cuda.FloatTensor(np.expand_dims(l, axis=0)), torch.cuda.FloatTensor(np.expand_dims(l_mask, axis=0))
@@ -602,36 +606,22 @@ def demo_output(video_file, v_name, audio_file, a_name, ren_feat_file, l_name, m
     model_2.eval()
     model_3.eval()
     model_4.eval()
+    happ, sadn, ange, disg, surp, fear = 0.1, 0.1, -0.1, 0.0, 0.1, 0.0
     with torch.no_grad():
         pred_1 = (model_1(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
         pred_2 = (model_2(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
         pred_3 = (model_3(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
         pred_4 = (model_4(l, v_256, v_512, v_1024, a, l_mask, v_mask, a_mask)).detach().cpu()
         pred = (pred_1+pred_2+pred_3+pred_4) / 4
-        zero = torch.zeros_like(pred)
-        one = torch.ones_like(pred)
-        pred_happ = torch.where(pred > 0.0, one, zero)    # happ sadn ange disg surp fear neut
-        pred_sadn = torch.where(pred > 0.1, one, zero)
-        pred_ange = torch.where(pred > -0.1, one, zero)
-        pred_disg = torch.where(pred > -0.1, one, zero)
-        pred_surp = torch.where(pred > 0.0, one, zero)
-        pred_fear = torch.where(pred > 0.0, one, zero)
-        print('The emotion(s) is(are)')
-        if int(pred_happ[0][0]) == 1:
-            print('happy')
-        if int(pred_sadn[0][1]) == 1:
-            print('sad')
-        if int(pred_ange[0][2]) == 1:
-            print('angry')
-        if int(pred_disg[0][3]) == 1:
-            print('disgust')
-        if int(pred_surp[0][4]) == 1:
-            print('surprise')
-        if int(pred_fear[0][5]) == 1:
-            print('fear')
-        if int(pred_happ[0][0])+int(pred_sadn[0][1])+int(pred_ange[0][2])+int(pred_disg[0][3])+int(pred_surp[0][4])+int(pred_fear[0][5]) == 0:
-            print('neutral')
+    print('The emotion(s) is(are)')
+    print('happy', round(sigmoids(pred[0][0], happ), 2))
+    print('sad', round(sigmoids(pred[0][1], sadn), 2))
+    print('angry', round(sigmoids(pred[0][2], ange), 2))
+    print('disgust', round(sigmoids(pred[0][3], disg), 2))
+    print('surprise', round(sigmoids(pred[0][4], surp), 2))
+    print('fear', round(sigmoids(pred[0][5], fear), 2))
 
+# 导入模型
 model_1 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
 model_1.load_state_dict(torch.load(log_dir + 'model_1_1.31.pt'))
 model_2 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
@@ -641,11 +631,19 @@ model_3.load_state_dict(torch.load(log_dir + 'model_3_1.39.pt'))
 model_4 = Multi_class(dim=DIM, l_len=L_LEN, v_len=V_LEN, a_len=A_LEN, n_heads=N_HEADS, n_layers=N_LAYERS, ffn=FFN).to(device)
 model_4.load_state_dict(torch.load(log_dir + 'model_4_1.32.pt'))
 
+# 替换文件名
 v_name = '0jtdrsmVzYQ[0]'
 a_name = '0jtdrsmVzYQ[0]'
 l_name = '99_1_1'
+
+# 输出情感
 demo_output(video_file, v_name, audio_file, a_name, ren_feat_file, l_name, model_1, model_2, model_3, model_4)
 
+# 结果
 # The emotion(s) is(are)
-# happy
-# sad
+# happy 0.74
+# sad 0.85
+# angry 0.02
+# disgust 0.02
+# surprise 0.02
+# fear 0.43
