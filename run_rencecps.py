@@ -16,9 +16,9 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 torch.backends.cudnn.benchmark = True
 
 # parameters
-# Love,Anxiety,Sorrow,Joy,Expect,Hate,Anger,Surprise,Polarity
-user_dir = '/home/dango/multimodal/ren/'
-log_dir = user_dir + 'log/new_feat_sequence_4/'
+# Love,Anxiety,Sorrow,Joy,Expect,Hate,Anger,Surprise,Neutral
+user_dir = '/home/XX/multimodal/ren/'
+log_dir = user_dir + 'log/XX/'
 EPOCHS = 99
 BATCH = 64
 DIM = 768*3
